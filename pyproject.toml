@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69.5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worldmodel"
+version = "0.0.1"
+description = "A lightweight PyTorch library for RSSM-based world models (DreamerV3-style) on Gymnasium environments, runnable end-to-end on a free Colab T4."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Min Htet Myet", email = "mattralminn@gmail.com" }
+]
+keywords = [
+    "world-models",
+    "reinforcement-learning",
+    "rssm",
+    "dreamer",
+    "pytorch",
+    "gymnasium",
+    "model-based-rl",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/Mattral/worldmodel"
+Repository = "https://github.com/Mattral/worldmodel"
+Issues = "https://github.com/Mattral/worldmodel/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
