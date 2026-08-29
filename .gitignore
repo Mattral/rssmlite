@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
+*.egg-info/
 dist/
 build/
-*.egg-info/
+.pytest_cache/
 .venv/
+*.pt
+*.ckpt
+wandb/

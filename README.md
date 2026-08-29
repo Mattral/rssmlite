@@ -5,27 +5,51 @@ A lightweight, well-documented, PyTorch-only library for learning RSSM-based
 on Gymnasium environments. Designed to run end-to-end on a free Google Colab
 T4 GPU with zero external datasets.
 
-> **Status:** early placeholder release (`v0.0.1`). This version exists to
-> reserve the package name; it does not yet contain the RSSM implementation.
-> Follow development at [github.com/Mattral/rssmlite](https://github.com/Mattral/rssmlite).
+> **Status:** active development. The `RSSM` world-model core (encoder,
+> GRU dynamics, categorical stochastic latent, decoder, reward/continue
+> heads) is implemented and tested. `RSSMAgent` (actor-critic in
+> imagination) and `ReplayBuffer` are next — see `ROADMAP.md`.
+>
+> The `0.0.1` release on PyPI is a placeholder that reserved this name;
+> the real API ships starting at `0.1.0`.
 
-## What's coming
+## Design philosophy
 
-- `RSSM` — encoder, GRU-based recurrent state, categorical stochastic latent,
-  decoder, reward head, continue head (swappable GRU/Transformer backbone).
-- `RSSMAgent` — actor-critic trained entirely on imagined rollouts.
-- `ReplayBuffer` — sequence storage and fixed-length sampling.
-- Config-driven support for CartPole, Acrobot, Pendulum, and LunarLander.
-- Runnable Colab notebooks with "Open in Colab" badges, zero manual setup.
+- **PyTorch only.** No JAX, no TensorFlow.
+- **Readable over clever.** Every class should be understandable by someone
+  who's read the DreamerV3 paper once, in under 10 minutes per file.
+- **Config-driven experiments, code-driven architecture.** Which
+  environment to run and hyperparameters are YAML; the model code doesn't
+  change per environment.
+- **Self-contained data.** No external dataset downloads — the environment
+  *is* the data source.
 
-## Install
+See `SPEC.md` for the full specification and `ROADMAP.md` for the phased
+task breakdown.
+
+## Install (development)
 
 ```bash
-pip install rssmlite
+git clone https://github.com/Mattral/rssmlite.git
+cd rssmlite
+pip install -e ".[dev]"
+pytest tests/
 ```
 
-(v0.0.1 installs only a version marker — the real API arrives in v0.1.0.)
+## Current public API
+
+```python
+from rssmlite import RSSM
+
+rssm = RSSM(obs_dim=6, action_dim=3)  # e.g. CartPole-style state vector
+rollout = rssm.observe(obs_seq, action_seq)     # teacher-forced training pass
+losses = rssm.loss(obs_seq, action_seq, reward_seq, continue_seq)
+losses["total"].backward()
+```
+
+`RSSMAgent` and `ReplayBuffer` (roadmap P1.2–P1.3) will wrap this into a
+full training loop.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/Mattral/rssmlite/blob/main/LICENSE).
+MIT — see [LICENSE](LICENSE).
