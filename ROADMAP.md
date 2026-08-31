@@ -1,4 +1,8 @@
-# `worldmodel` — Roadmap
+# `rssmlite` — Roadmap
+
+> **Naming note:** originally specified as `worldmodel`; renamed to
+> `rssmlite` during P0 after PyPI rejected the original name as too
+> similar to the existing `worldmodels` package. See SPEC.md for detail.
 
 Priorities follow P0 (do now, blocking everything else) → P1 (core library) →
 P2 (research contribution) → P3 (stretch / optional). Within a priority level,
@@ -11,10 +15,10 @@ See `SPEC.md` for full context, design philosophy, and success criteria.
 ## P0 — Foundation (blocking, do first)
 
 - [ ] Create PyPI account, enable 2FA, generate API token.
-- [ ] Build and upload a minimal placeholder package (`worldmodel==0.0.1`) to
+- [ ] Build and upload a minimal placeholder package (`rssmlite==0.0.1`) to
   PyPI to reserve the name permanently. Real description + license + GitHub
   link, not an empty shell.
-- [ ] Create `github.com/Mattral/worldmodel` repo (even if just README + LICENSE
+- [ ] Create `github.com/Mattral/rssmlite` repo (even if just README + LICENSE
   initially) so the GitHub namespace matches the PyPI name.
 - [ ] Set up `pyproject.toml` with correct package metadata (name, version,
   author, license, classifiers, Python version requirement).
@@ -22,7 +26,7 @@ See `SPEC.md` for full context, design philosophy, and success criteria.
 - [ ] Write the initial README with project description, install instructions
   (even if install doesn't do much yet), and a link to `SPEC.md`.
 
-**Exit criteria for P0:** `pip install worldmodel` installs *something* real,
+**Exit criteria for P0:** `pip install rssmlite` installs *something* real,
 the GitHub repo exists and mirrors the PyPI project, and there is a README a
 stranger could read to understand what this is.
 

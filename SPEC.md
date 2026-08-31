@@ -1,4 +1,11 @@
-# `worldmodel` — Project Specification
+# `rssmlite` — Project Specification
+
+> **Naming note:** this project was originally specified under the name
+> `worldmodel`. PyPI rejected that name on upload — its similarity filter
+> flagged it as too close to the existing `worldmodels` (plural) package.
+> Renamed to `rssmlite` before any code was written (still within P0).
+> All references below use the final name; the roadmap/commit history
+> documents the actual rename if you want the play-by-play.
 
 **Author:** Min Htet Myet ([github.com/Mattral](https://github.com/Mattral))
 **Status:** Draft v1.0
@@ -9,7 +16,7 @@
 
 ## 1. One-Line Summary
 
-`worldmodel` is a lightweight, well-documented, PyTorch-only library for learning
+`rssmlite` is a lightweight, well-documented, PyTorch-only library for learning
 RSSM-based (Recurrent State-Space Model) world models — in the DreamerV2/V3
 tradition — on Gymnasium environments, designed to run end-to-end on a free
 Google Colab T4 GPU with zero external datasets.
@@ -36,14 +43,14 @@ Existing implementations are either:
 clear world model library aimed at people who want to *understand and extend*
 an RSSM, not just call a black-box `.fit()`.
 
-`worldmodel` fills that gap.
+`rssmlite` fills that gap.
 
 ---
 
 ## 3. Goals
 
 1. Provide a clean, importable PyTorch implementation of an RSSM-based world
-   model (`pip install worldmodel`).
+   model (`pip install rssmlite`).
 2. Support a small set of well-understood Gymnasium environments out of the box:
    CartPole, Acrobot, Pendulum, LunarLander.
 3. Make the internal mechanics inspectable and visualizable: latent space
@@ -80,10 +87,10 @@ an RSSM, not just call a black-box `.fit()`.
 Success is defined in layers, from minimum viable to stretch:
 
 **Layer 0 (must happen first):**
-- [ ] The name `worldmodel` is reserved on PyPI under this project's ownership.
+- [ ] The name `rssmlite` is reserved on PyPI under this project's ownership.
 
 **Layer 1 (core library works):**
-- [ ] `pip install worldmodel` installs a working package.
+- [ ] `pip install rssmlite` installs a working package.
 - [ ] A user can train an RSSM world model on CartPole in a single Colab
   notebook, end to end, in under 30 minutes on a T4.
 - [ ] The world model's imagined rollouts are visually/quantitatively
@@ -139,7 +146,7 @@ These are the principles that should guide every design decision in this repo:
    on a free-tier Colab T4 with no manual intervention. The same code should
    also run locally without Colab-specific hacks.
 6. **Notebooks are thin; the package is thick.** Notebooks import from
-   `worldmodel` and call a handful of high-level functions. They do not
+   `rssmlite` and call a handful of high-level functions. They do not
    contain model definitions or training loop internals — that logic lives
    in the package where it's tested and versioned.
 7. **Self-contained data.** No external dataset downloads, ever. The
@@ -168,10 +175,10 @@ LunarLander, no other dependency.
 ## 8. Repository Structure
 
 ```
-worldmodel/
+rssmlite/
 │
 ├── src/
-│   └── worldmodel/                  ← the installable package
+│   └── rssmlite/                  ← the installable package
 │       ├── __init__.py
 │       ├── rssm.py                  ← RSSM core (GRU + categorical latents)
 │       ├── networks.py              ← encoder, decoder, reward/continue heads
@@ -228,13 +235,13 @@ worldmodel/
 
 ---
 
-## 9. Package Architecture (`worldmodel/`)
+## 9. Package Architecture (`rssmlite/`)
 
 **Core classes (initial public API):**
 
 ```python
-from worldmodel import RSSM, RSSMAgent, ReplayBuffer
-from worldmodel.backbones import GRUDynamics, TransformerDynamics
+from rssmlite import RSSM, RSSMAgent, ReplayBuffer
+from rssmlite.backbones import GRUDynamics, TransformerDynamics
 ```
 
 - `RSSM` — the world model itself: encoder, recurrent+stochastic latent,
@@ -276,7 +283,7 @@ run any notebook independently.
 
 **Persona A — Someone extending the code (you, primarily)**
 ```python
-from worldmodel import RSSMAgent
+from rssmlite import RSSMAgent
 import gymnasium as gym
 
 env = gym.make("LunarLander-v3")
@@ -288,8 +295,8 @@ agent.imagine_rollout(steps=15)
 
 **Persona B — A researcher wanting to swap a component**
 ```python
-from worldmodel import RSSM
-from worldmodel.backbones import TransformerDynamics
+from rssmlite import RSSM
+from rssmlite.backbones import TransformerDynamics
 
 rssm = RSSM(dynamics=TransformerDynamics(d_model=256), latent_dim=32)
 ```
@@ -343,7 +350,7 @@ Each file below should exist before v1.0 is considered "done":
 ## 14. Publishing Plan
 
 **Step 1 (do first, before any code is written): Reserve the PyPI name.**
-Publish a minimal placeholder package (`worldmodel==0.0.1`) with real
+Publish a minimal placeholder package (`rssmlite==0.0.1`) with real
 metadata (description, license, GitHub link) to claim the name permanently.
 This is non-negotiable as the first action — PyPI names are first-come,
 first-served with no reservation mechanism other than publishing.
