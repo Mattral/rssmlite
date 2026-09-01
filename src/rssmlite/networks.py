@@ -11,16 +11,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from rssmlite.utils import symlog
-
-
-def _mlp(in_dim: int, hidden_dim: int, out_dim: int, num_hidden_layers: int = 2) -> nn.Sequential:
-    """Small helper so each network below is a one-liner, not boilerplate."""
-    layers: list[nn.Module] = [nn.Linear(in_dim, hidden_dim), nn.SiLU()]
-    for _ in range(num_hidden_layers - 1):
-        layers += [nn.Linear(hidden_dim, hidden_dim), nn.SiLU()]
-    layers.append(nn.Linear(hidden_dim, out_dim))
-    return nn.Sequential(*layers)
+from rssmlite.utils import mlp, symlog
 
 
 class Encoder(nn.Module):
@@ -29,7 +20,7 @@ class Encoder(nn.Module):
 
     def __init__(self, obs_dim: int, embed_dim: int, hidden_dim: int = 200):
         super().__init__()
-        self.net = _mlp(obs_dim, hidden_dim, embed_dim)
+        self.net = mlp(obs_dim, hidden_dim, embed_dim)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         return self.net(symlog(obs))
@@ -52,7 +43,7 @@ class PosteriorNet(nn.Module):
         super().__init__()
         self.num_categoricals = num_categoricals
         self.num_classes = num_classes
-        self.net = _mlp(deter_dim + embed_dim, hidden_dim, num_categoricals * num_classes)
+        self.net = mlp(deter_dim + embed_dim, hidden_dim, num_categoricals * num_classes)
 
     def forward(self, deter: torch.Tensor, embed: torch.Tensor) -> torch.Tensor:
         logits = self.net(torch.cat([deter, embed], dim=-1))
@@ -65,7 +56,7 @@ class Decoder(nn.Module):
 
     def __init__(self, feature_dim: int, obs_dim: int, hidden_dim: int = 200):
         super().__init__()
-        self.net = _mlp(feature_dim, hidden_dim, obs_dim)
+        self.net = mlp(feature_dim, hidden_dim, obs_dim)
 
     def forward(self, feature: torch.Tensor) -> torch.Tensor:
         return self.net(feature)
@@ -77,7 +68,7 @@ class RewardHead(nn.Module):
 
     def __init__(self, feature_dim: int, hidden_dim: int = 200):
         super().__init__()
-        self.net = _mlp(feature_dim, hidden_dim, 1)
+        self.net = mlp(feature_dim, hidden_dim, 1)
 
     def forward(self, feature: torch.Tensor) -> torch.Tensor:
         return self.net(feature).squeeze(-1)
@@ -90,7 +81,7 @@ class ContinueHead(nn.Module):
 
     def __init__(self, feature_dim: int, hidden_dim: int = 200):
         super().__init__()
-        self.net = _mlp(feature_dim, hidden_dim, 1)
+        self.net = mlp(feature_dim, hidden_dim, 1)
 
     def forward(self, feature: torch.Tensor) -> torch.Tensor:
         return self.net(feature).squeeze(-1)

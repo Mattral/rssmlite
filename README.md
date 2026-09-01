@@ -5,10 +5,12 @@ A lightweight, well-documented, PyTorch-only library for learning RSSM-based
 on Gymnasium environments. Designed to run end-to-end on a free Google Colab
 T4 GPU with zero external datasets.
 
-> **Status:** active development. The `RSSM` world-model core (encoder,
-> GRU dynamics, categorical stochastic latent, decoder, reward/continue
-> heads) is implemented and tested. `RSSMAgent` (actor-critic in
-> imagination) and `ReplayBuffer` are next — see `ROADMAP.md`.
+> **Status:** active development. `RSSM` (world model core), `ReplayBuffer`,
+> and `RSSMAgent` (actor-critic trained in imagination) are implemented and
+> tested — a `python scripts/train.py --config configs/cartpole.yaml` run
+> works end-to-end. Not yet verified: full convergence within 30 min on a
+> real Colab T4 (only tiny/fast smoke runs have been checked so far — see
+> ROADMAP.md P1.3). `configs/` beyond CartPole and `notebooks/` are next.
 >
 > The `0.0.1` release on PyPI is a placeholder that reserved this name;
 > the real API ships starting at `0.1.0`.
@@ -39,16 +41,35 @@ pytest tests/
 ## Current public API
 
 ```python
-from rssmlite import RSSM
+from rssmlite import RSSMAgent
+import gymnasium as gym
 
-rssm = RSSM(obs_dim=6, action_dim=3)  # e.g. CartPole-style state vector
-rollout = rssm.observe(obs_seq, action_seq)     # teacher-forced training pass
-losses = rssm.loss(obs_seq, action_seq, reward_seq, continue_seq)
-losses["total"].backward()
+env = gym.make("CartPole-v1")
+agent = RSSMAgent.from_env(env)
+agent.train(env, steps=200_000, checkpoint_dir="./ckpts")
+agent.imagine_rollout(steps=15)
+agent.visualize_latent_space()  # needs: pip install rssmlite[viz]
 ```
 
-`RSSMAgent` and `ReplayBuffer` (roadmap P1.2–P1.3) will wrap this into a
-full training loop.
+Or via the CLI:
+```bash
+pip install -e ".[dev,envs]"
+python scripts/train.py --config configs/cartpole.yaml
+python scripts/train.py --config configs/cartpole.yaml --resume checkpoints/checkpoint_50000.pt
+```
+
+**Known simplifications (documented, not hidden):**
+- Continuous actions (Pendulum) use an unbounded Normal policy — no tanh
+  squashing yet, so the actor can in principle propose actions outside the
+  env's valid range. Fine for the P1.3 smoke tests; worth fixing before
+  reporting real Pendulum results.
+- A config's `train.steps` is a **total** budget across the whole run,
+  including time before a `--resume`. Resuming from a checkpoint whose
+  `env_steps` already exceeds `steps` is a no-op, not an error — bump
+  `steps` in the config before resuming a long run.
+- `configs/cartpole.yaml` is deliberately minimal (P1.4 formalizes the
+  config system across all four target environments; this just unblocks
+  P1.3's CLI).
 
 ## License
 

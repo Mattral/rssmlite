@@ -20,7 +20,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package + dev deps
-        run: python -m pip install -e ".[dev,envs]"
+        run: python -m pip install -e ".[dev,envs,viz]"
 
       - name: Run tests
         run: python -m pytest tests/ -v

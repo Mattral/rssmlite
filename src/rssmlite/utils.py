@@ -94,3 +94,19 @@ def straight_through_sample(logits: torch.Tensor) -> torch.Tensor:
     probs = F.softmax(logits, dim=-1)
     sample = torch.distributions.OneHotCategorical(probs=probs).sample()
     return sample + probs - probs.detach()
+
+
+def mlp(in_dim: int, hidden_dim: int, out_dim: int, num_hidden_layers: int = 2) -> torch.nn.Sequential:
+    """Shared MLP builder used by every network in the package (encoder,
+    decoder, heads, actor, critic) so they're each a one-liner, not
+    boilerplate. Lives here rather than in `networks.py` since
+    `actor_critic.py` needs it too and shouldn't import from `networks.py`
+    just for this.
+    """
+    import torch.nn as nn
+
+    layers: list[torch.nn.Module] = [nn.Linear(in_dim, hidden_dim), nn.SiLU()]
+    for _ in range(num_hidden_layers - 1):
+        layers += [nn.Linear(hidden_dim, hidden_dim), nn.SiLU()]
+    layers.append(nn.Linear(hidden_dim, out_dim))
+    return nn.Sequential(*layers)
