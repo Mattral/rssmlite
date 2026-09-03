@@ -1,0 +1,32 @@
+# Acrobot-v1: discrete actions, sparse reward (-1 every step until solved).
+# Sparser reward than CartPole makes the reward head harder to fit, which
+# is exactly why this env is in scope (SPEC.md Section 7).
+# obs_dim=6, action_dim=3 (one-hot), discrete=true — inferred at runtime.
+
+env:
+  id: Acrobot-v1
+  max_episode_steps: 500
+
+agent:
+  rssm_kwargs:
+    deter_dim: 200
+    embed_dim: 200
+    num_categoricals: 32
+    num_classes: 32
+    hidden_dim: 200
+  hidden_dim: 200
+  world_model_lr: 0.0003
+  actor_lr: 0.00008
+  critic_lr: 0.00008
+  gamma: 0.99
+  lam: 0.95
+  entropy_coef: 0.001   # higher than CartPole — encourages exploration under sparse reward
+  replay_capacity_episodes: 500
+
+train:
+  steps: 300000
+  seed_episodes: 10
+  batch_size: 16
+  seq_len: 50
+  horizon: 15
+  checkpoint_every: 10000

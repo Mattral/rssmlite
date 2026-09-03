@@ -1,0 +1,38 @@
+# LunarLander-v3: discrete actions (4), shaped + terminal reward, the
+# hardest env in v1 scope (SPEC.md Section 7). The reward structure
+# combines a shaped dense component (hovering near landing pad) with
+# sparse bonuses/penalties on landing/crashing, making the reward head
+# harder to predict than either CartPole or Pendulum alone.
+# obs_dim=8, action_dim=4 (one-hot), discrete=true — inferred at runtime.
+#
+# Using the discrete variant here. LunarLanderContinuous-v3 (Box actions)
+# is out of v1 scope but can be run by pointing the env.id at it and
+# disabling discrete inference — the code handles it, it's just untested.
+
+env:
+  id: LunarLander-v3
+  max_episode_steps: 1000
+
+agent:
+  rssm_kwargs:
+    deter_dim: 512
+    embed_dim: 256
+    num_categoricals: 32
+    num_classes: 32
+    hidden_dim: 400
+  hidden_dim: 400
+  world_model_lr: 0.0003
+  actor_lr: 0.00008
+  critic_lr: 0.00008
+  gamma: 0.999   # higher discount — landing reward arrives hundreds of steps after takeoff
+  lam: 0.95
+  entropy_coef: 0.001
+  replay_capacity_episodes: 1000  # more capacity for longer episodes
+
+train:
+  steps: 500000
+  seed_episodes: 20
+  batch_size: 16
+  seq_len: 64
+  horizon: 15
+  checkpoint_every: 25000

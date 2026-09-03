@@ -1,75 +1,108 @@
 # rssmlite
 
-A lightweight, well-documented, PyTorch-only library for learning RSSM-based
-(Recurrent State-Space Model) world models — in the DreamerV2/V3 tradition —
-on Gymnasium environments. Designed to run end-to-end on a free Google Colab
-T4 GPU with zero external datasets.
+[![PyPI version](https://badge.fury.io/py/rssmlite.svg)](https://pypi.org/project/rssmlite/)
+[![CI](https://github.com/Mattral/rssmlite/actions/workflows/ci.yml/badge.svg)](https://github.com/Mattral/rssmlite/actions/workflows/ci.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mattral/rssmlite/blob/main/notebooks/02_cartpole_experiment.ipynb)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status:** active development. `RSSM` (world model core), `ReplayBuffer`,
-> and `RSSMAgent` (actor-critic trained in imagination) are implemented and
-> tested — a `python scripts/train.py --config configs/cartpole.yaml` run
-> works end-to-end. Not yet verified: full convergence within 30 min on a
-> real Colab T4 (only tiny/fast smoke runs have been checked so far — see
-> ROADMAP.md P1.3). `configs/` beyond CartPole and `notebooks/` are next.
+A lightweight, well-documented, **PyTorch-only** library for learning
+RSSM-based (Recurrent State-Space Model) world models — in the DreamerV2/V3
+tradition — on Gymnasium environments. Designed to run end-to-end on a
+**free Google Colab T4 GPU** with zero external datasets.
+
+> **Status:** core library complete — `RSSM`, `ReplayBuffer`, `RSSMAgent`,
+> four environment configs, `scripts/train.py` CLI, checkpoint save/resume,
+> and full documentation. Full convergence on a real Colab T4 is the
+> remaining unverified item (ROADMAP.md P1.3 exit criterion).
 >
-> The `0.0.1` release on PyPI is a placeholder that reserved this name;
-> the real API ships starting at `0.1.0`.
+> The `0.0.1` release on PyPI is a name-reservation placeholder; the real
+> API ships at `0.1.0`.
 
-## Design philosophy
+---
 
-- **PyTorch only.** No JAX, no TensorFlow.
-- **Readable over clever.** Every class should be understandable by someone
-  who's read the DreamerV3 paper once, in under 10 minutes per file.
-- **Config-driven experiments, code-driven architecture.** Which
-  environment to run and hyperparameters are YAML; the model code doesn't
-  change per environment.
-- **Self-contained data.** No external dataset downloads — the environment
-  *is* the data source.
+## Install
 
-See `SPEC.md` for the full specification and `ROADMAP.md` for the phased
-task breakdown.
+```bash
+pip install rssmlite[envs]        # + gymnasium
+pip install rssmlite[envs,viz]    # + matplotlib for plots
+```
 
-## Install (development)
-
+From source (development):
 ```bash
 git clone https://github.com/Mattral/rssmlite.git
 cd rssmlite
-pip install -e ".[dev]"
-pytest tests/
+pip install -e ".[dev,envs,viz]"
+pytest tests/   # 21 passed
 ```
 
-## Current public API
+---
+
+## Quick start
 
 ```python
-from rssmlite import RSSMAgent
 import gymnasium as gym
+from rssmlite import RSSMAgent
 
 env = gym.make("CartPole-v1")
-agent = RSSMAgent.from_env(env)
+agent = RSSMAgent.from_config("configs/cartpole.yaml", env=env)
 agent.train(env, steps=200_000, checkpoint_dir="./ckpts")
+
+# Inspect what the model learned
 agent.imagine_rollout(steps=15)
-agent.visualize_latent_space()  # needs: pip install rssmlite[viz]
+agent.visualize_latent_space()
 ```
 
 Or via the CLI:
 ```bash
-pip install -e ".[dev,envs]"
 python scripts/train.py --config configs/cartpole.yaml
-python scripts/train.py --config configs/cartpole.yaml --resume checkpoints/checkpoint_50000.pt
+python scripts/train.py --config configs/cartpole.yaml --resume ckpts/checkpoint_50000.pt
 ```
 
-**Known simplifications (documented, not hidden):**
-- Continuous actions (Pendulum) use an unbounded Normal policy — no tanh
-  squashing yet, so the actor can in principle propose actions outside the
-  env's valid range. Fine for the P1.3 smoke tests; worth fixing before
-  reporting real Pendulum results.
-- A config's `train.steps` is a **total** budget across the whole run,
-  including time before a `--resume`. Resuming from a checkpoint whose
-  `env_steps` already exceeds `steps` is a no-op, not an error — bump
-  `steps` in the config before resuming a long run.
-- `configs/cartpole.yaml` is deliberately minimal (P1.4 formalizes the
-  config system across all four target environments; this just unblocks
-  P1.3's CLI).
+---
+
+## Design philosophy
+
+- **PyTorch only.** No JAX, no TensorFlow.
+- **Readable over clever.** Every class should be understandable in under
+  10 minutes top-to-bottom. If it's longer, it gets split.
+- **Config-driven experiments, code-driven architecture.** Hyperparameters
+  and environment choice live in YAML; the model code doesn't change per run.
+- **Self-contained.** No external dataset downloads — the environment is
+  the data source.
+
+---
+
+## Available environments
+
+| Config | Env | Actions | Notes |
+|---|---|---|---|
+| `configs/cartpole.yaml` | CartPole-v1 | Discrete | Fastest sanity check |
+| `configs/acrobot.yaml` | Acrobot-v1 | Discrete | Sparse reward stress test |
+| `configs/pendulum.yaml` | Pendulum-v1 | Continuous | Exercises continuous actor |
+| `configs/lunarlander.yaml` | LunarLander-v3 | Discrete | Hardest in v1 scope |
+
+---
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — RSSM math, design rationale, file map
+- [`docs/getting_started.md`](docs/getting_started.md) — install, first training run, evaluation
+- [`docs/api_reference.md`](docs/api_reference.md) — full public API
+- [`docs/colab_guide.md`](docs/colab_guide.md) — Colab setup, Drive checkpointing, disconnect recovery
+
+---
+
+## Known simplifications (documented, not hidden)
+
+- Continuous actions (Pendulum) have no tanh squashing — actions can
+  technically exceed the env's valid range; Gym clips silently. Fine for
+  current results; to fix before reporting serious Pendulum numbers.
+- `train.steps` is a total budget across the whole run including pre-resume
+  time. Resuming from step 80 000 with `steps: 200000` trains until 200 000.
+- Device management is explicit: call `.to(device)` on `agent.rssm`,
+  `agent.actor`, `agent.critic` manually. See `docs/colab_guide.md`.
+
+---
 
 ## License
 

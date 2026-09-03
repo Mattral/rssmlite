@@ -26,6 +26,34 @@ from rssmlite.rssm import RSSM
 from rssmlite.utils import straight_through_sample, symexp
 
 
+_KNOWN_CONFIG_SECTIONS = {"env", "agent", "train"}
+_KNOWN_AGENT_KEYS = {
+    "obs_dim", "action_dim", "discrete", "rssm_kwargs", "hidden_dim",
+    "world_model_lr", "actor_lr", "critic_lr", "gamma", "lam",
+    "entropy_coef", "replay_capacity_episodes",
+}
+_KNOWN_TRAIN_KEYS = {
+    "steps", "seed_episodes", "batch_size", "seq_len", "horizon",
+    "max_episode_steps", "checkpoint_every", "log_every",
+}
+
+
+def _validate_config(config: dict) -> None:
+    """Fail fast with a readable error rather than a confusing TypeError
+    deep inside __init__ if the user has a typo in a config key."""
+    unknown_sections = set(config) - _KNOWN_CONFIG_SECTIONS
+    if unknown_sections:
+        raise ValueError(f"Unknown config section(s): {unknown_sections}. Expected: {_KNOWN_CONFIG_SECTIONS}")
+    agent_keys = set(config.get("agent", {}))
+    unknown_agent = agent_keys - _KNOWN_AGENT_KEYS
+    if unknown_agent:
+        raise ValueError(f"Unknown agent config key(s): {unknown_agent}. Known: {_KNOWN_AGENT_KEYS}")
+    train_keys = set(config.get("train", {}))
+    unknown_train = train_keys - _KNOWN_TRAIN_KEYS
+    if unknown_train:
+        raise ValueError(f"Unknown train config key(s): {unknown_train}. Known: {_KNOWN_TRAIN_KEYS}")
+
+
 class RSSMAgent:
     def __init__(
         self,
@@ -92,17 +120,36 @@ class RSSMAgent:
 
     @classmethod
     def from_config(cls, path: str, env=None) -> "RSSMAgent":
-        """Build an agent from a YAML config (roadmap P1.4 formalizes this
-        further across all four target envs; this is the minimal version
-        needed to unblock P1.3's `train.py --config configs/cartpole.yaml`).
+        """Build an agent from a YAML config (roadmap P1.4).
+
+        Config schema (all sections optional except what's needed for
+        construction — see configs/*.yaml for worked examples):
+
+            env:
+              id: CartPole-v1          # gymnasium env id
+              max_episode_steps: 500
+
+            agent:                     # kwargs forwarded to RSSMAgent.__init__
+              rssm_kwargs: {...}
+              hidden_dim: 200
+              world_model_lr: 3e-4
+              ...
+
+            train:                     # kwargs forwarded to RSSMAgent.train()
+              steps: 200000
+              seed_episodes: 5
+              ...
 
         If the config doesn't specify obs_dim/action_dim/discrete directly,
-        pass `env` and they're inferred from it.
+        pass `env` and they're inferred from it (recommended — keeps configs
+        readable without hard-coding dims that are implicit in the env id).
         """
         with open(path) as f:
             config = yaml.safe_load(f)
 
-        agent_kwargs = config.get("agent", {})
+        _validate_config(config)
+
+        agent_kwargs = dict(config.get("agent", {}))
         if env is not None and not {"obs_dim", "action_dim", "discrete"} <= agent_kwargs.keys():
             import gymnasium as gym
 

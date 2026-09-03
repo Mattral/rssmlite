@@ -1,0 +1,37 @@
+# Pendulum-v1: continuous actions (torque in [-2, 2]), shaped dense reward.
+# The only continuous-action env in v1 scope (SPEC.md Section 7) — exercises
+# the Normal-distribution Actor branch that CartPole/Acrobot never touch.
+# obs_dim=3, action_dim=1, discrete=false — inferred at runtime.
+#
+# Known limitation: the continuous Actor currently has no tanh squashing,
+# so proposed actions can technically exceed the env's [-2, 2] range. Gym
+# clips them silently, so training works, but results may be slightly
+# suboptimal vs. a properly bounded policy. Documented in README.
+
+env:
+  id: Pendulum-v1
+  max_episode_steps: 200
+
+agent:
+  rssm_kwargs:
+    deter_dim: 200
+    embed_dim: 200
+    num_categoricals: 32
+    num_classes: 32
+    hidden_dim: 200
+  hidden_dim: 200
+  world_model_lr: 0.0003
+  actor_lr: 0.00008
+  critic_lr: 0.00008
+  gamma: 0.99
+  lam: 0.95
+  entropy_coef: 0.0001  # lower than discrete envs — Normal entropy is already on a different scale
+  replay_capacity_episodes: 500
+
+train:
+  steps: 200000
+  seed_episodes: 5
+  batch_size: 16
+  seq_len: 50
+  horizon: 15
+  checkpoint_every: 10000

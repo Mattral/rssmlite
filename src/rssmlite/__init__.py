@@ -16,9 +16,17 @@ Author:  Min Htet Myet
 """
 
 from rssmlite.agent import RSSMAgent
+from rssmlite.evaluation import reconstruction_report, run_evaluation_episodes
 from rssmlite.replay_buffer import ReplayBuffer
 from rssmlite.rssm import RSSM
 
 __version__ = "0.1.0.dev0"
 
-__all__ = ["RSSM", "ReplayBuffer", "RSSMAgent", "__version__"]
+__all__ = [
+    "RSSM",
+    "ReplayBuffer",
+    "RSSMAgent",
+    "reconstruction_report",
+    "run_evaluation_episodes",
+    "__version__",
+]
