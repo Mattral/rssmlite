@@ -8,3 +8,5 @@ build/
 *.pt
 *.ckpt
 wandb/
+notebooks/latent_groups.png
+notebooks/*.png
