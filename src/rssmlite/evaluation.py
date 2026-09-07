@@ -40,6 +40,9 @@ def reconstruction_report(agent: "RSSMAgent", batch: dict) -> dict:
     obs, action = batch["obs"], batch["action"]
 
     with torch.no_grad():
+        # Move batch to wherever the model lives — handles CPU/GPU transparently.
+        batch = agent._batch_to_device(batch)
+        obs, action = batch["obs"], batch["action"]
         rollout = rssm.observe(obs, action)
         feature = torch.cat([rollout["deter"], rollout["stoch"]], dim=-1)
         obs_pred_symlog = rssm.decoder(feature)
@@ -72,8 +75,12 @@ def plot_reconstruction(agent: "RSSMAgent", batch: dict, feature_idx: int = 0):
     from rssmlite.utils import symexp, symlog
 
     rssm = agent.rssm
-    obs = batch["obs"][:1]   # first trajectory only
+    obs = batch["obs"][:1]
     action = batch["action"][:1]
+
+    # Move to model device.
+    obs = obs.to(agent.device)
+    action = action.to(agent.device)
 
     with torch.no_grad():
         rollout = rssm.observe(obs, action)

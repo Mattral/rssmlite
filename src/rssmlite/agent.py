@@ -1,15 +1,6 @@
 """
 RSSMAgent: the thing a user actually calls. Wraps an RSSM (world model)
-with an Actor/Critic and owns the full training loop — collecting real
-experience, fitting the world model on it, then training the actor-critic
-purely on rollouts imagined by that world model (Section 9's Persona A
-usage: `agent.train(env, steps=200_000, checkpoint_dir=...)`).
-
-Kept at the "orchestration" level: the actual math lives in `rssm.py`
-(world model) and `actor_critic.py` (policy/value + lambda-returns). If
-this file starts explaining *how* a loss is computed rather than *when*,
-that logic belongs in one of those two files instead — see Section 6's
-10-minute-readability rule.
+with an Actor/Critic and owns the full training loop.
 """
 
 from __future__ import annotations
@@ -17,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import yaml
 
 from rssmlite.actor_critic import Actor, Critic, lambda_return
@@ -39,8 +31,6 @@ _KNOWN_TRAIN_KEYS = {
 
 
 def _validate_config(config: dict) -> None:
-    """Fail fast with a readable error rather than a confusing TypeError
-    deep inside __init__ if the user has a typo in a config key."""
     unknown_sections = set(config) - _KNOWN_CONFIG_SECTIONS
     if unknown_sections:
         raise ValueError(f"Unknown config section(s): {unknown_sections}. Expected: {_KNOWN_CONFIG_SECTIONS}")
@@ -87,8 +77,6 @@ class RSSMAgent:
         self.buffer = ReplayBuffer(capacity_episodes=replay_capacity_episodes)
         self._env_steps = 0
 
-        # Saved so `save_checkpoint`/`from_config` can fully reconstruct
-        # this agent without the caller needing to remember every kwarg.
         self._init_kwargs = dict(
             obs_dim=obs_dim,
             action_dim=action_dim,
@@ -105,80 +93,76 @@ class RSSMAgent:
         )
 
     # ------------------------------------------------------------------
-    # Construction from a Gymnasium env / YAML config
+    # Device handling — explicit, not implicit
+    # ------------------------------------------------------------------
+
+    @property
+    def device(self) -> torch.device:
+        """The device all three networks currently live on. Use .to(device)
+        to move everything at once."""
+        return next(self.rssm.parameters()).device
+
+    def to(self, device) -> "RSSMAgent":
+        """Move all networks to `device` in one call. Returns self so you
+        can chain: agent = RSSMAgent(...).to('cuda')"""
+        self.rssm.to(device)
+        self.actor.to(device)
+        self.critic.to(device)
+        return self
+
+    def _batch_to_device(self, batch: dict) -> dict:
+        """Move a replay-buffer sample dict to the same device as the networks."""
+        return {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()}
+
+    # ------------------------------------------------------------------
+    # Construction helpers
     # ------------------------------------------------------------------
 
     @classmethod
     def from_env(cls, env, **kwargs) -> "RSSMAgent":
-        """Infer obs_dim/action_dim/discrete straight from a Gymnasium env
-        — the common case, so callers don't have to know RSSM internals."""
         import gymnasium as gym
-
         obs_dim = env.observation_space.shape[0]
         discrete = isinstance(env.action_space, gym.spaces.Discrete)
-        return cls(obs_dim=obs_dim, action_dim=action_dim_of(env.action_space), discrete=discrete, **kwargs)
+        return cls(obs_dim=obs_dim, action_dim=action_dim_of(env.action_space),
+                   discrete=discrete, **kwargs)
 
     @classmethod
     def from_config(cls, path: str, env=None) -> "RSSMAgent":
-        """Build an agent from a YAML config (roadmap P1.4).
-
-        Config schema (all sections optional except what's needed for
-        construction — see configs/*.yaml for worked examples):
-
-            env:
-              id: CartPole-v1          # gymnasium env id
-              max_episode_steps: 500
-
-            agent:                     # kwargs forwarded to RSSMAgent.__init__
-              rssm_kwargs: {...}
-              hidden_dim: 200
-              world_model_lr: 3e-4
-              ...
-
-            train:                     # kwargs forwarded to RSSMAgent.train()
-              steps: 200000
-              seed_episodes: 5
-              ...
-
-        If the config doesn't specify obs_dim/action_dim/discrete directly,
-        pass `env` and they're inferred from it (recommended — keeps configs
-        readable without hard-coding dims that are implicit in the env id).
-        """
+        """Build an agent from a YAML config. See configs/*.yaml for examples.
+        Pass `env` to infer obs_dim/action_dim/discrete automatically."""
         with open(path) as f:
             config = yaml.safe_load(f)
-
         _validate_config(config)
-
         agent_kwargs = dict(config.get("agent", {}))
         if env is not None and not {"obs_dim", "action_dim", "discrete"} <= agent_kwargs.keys():
             import gymnasium as gym
-
             agent_kwargs.setdefault("obs_dim", env.observation_space.shape[0])
             agent_kwargs.setdefault("action_dim", action_dim_of(env.action_space))
             agent_kwargs.setdefault("discrete", isinstance(env.action_space, gym.spaces.Discrete))
         return cls(**agent_kwargs)
 
     # ------------------------------------------------------------------
-    # Acting in the real environment (posterior filtering, not imagination)
+    # Acting in the real environment
     # ------------------------------------------------------------------
 
     def _make_acting_policy(self):
-        """A fresh, stateful closure for one episode of real interaction.
-        Unlike `RSSM.imagine()` (which never sees real observations), this
-        updates the belief state from the real obs at every step — exactly
-        `RSSM.observe()`'s recurrence, just one step at a time instead of a
-        whole batch, and with the actor choosing the action instead of it
-        being given.
-        """
-        state = self.rssm.initial_state(1, next(self.rssm.parameters()).device)
-        prev_action = torch.zeros(1, self.action_dim)
+        """Stateful one-episode policy. Updates belief state from real obs
+        at each step (posterior filtering), then samples from the actor."""
+        device = self.device
+        state = self.rssm.initial_state(1, device)
+        # FIX 1: prev_action must live on the same device as the networks.
+        prev_action = torch.zeros(1, self.action_dim, device=device)
         step = {"t": 0}
 
         def policy(obs):
-            obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+            # FIX 1 cont: move incoming numpy obs to device explicitly.
+            obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
                 if step["t"] > 0:
-                    state["deter"] = self.rssm.dynamics(state["deter"], state["stoch"], prev_action)
+                    state["deter"] = self.rssm.dynamics(
+                        state["deter"], state["stoch"], prev_action
+                    )
                 embed = self.rssm.encoder(obs_t)
                 post_logits = self.rssm.posterior_net(state["deter"], embed)
                 state["stoch"] = straight_through_sample(post_logits).flatten(-2, -1)
@@ -187,27 +171,35 @@ class RSSMAgent:
 
             prev_action.copy_(action)
             step["t"] += 1
-            return action.squeeze(0).argmax().item() if self.discrete else action.squeeze(0).numpy()
+            if self.discrete:
+                return action.squeeze(0).argmax().item()
+            return action.squeeze(0).cpu().numpy()
 
         return policy
 
     # ------------------------------------------------------------------
-    # Training
+    # Training steps
     # ------------------------------------------------------------------
 
     def _world_model_step(self, batch: dict) -> dict:
-        losses = self.rssm.loss(batch["obs"], batch["action"], batch["reward"], 1.0 - batch["done"])
+        # FIX 1: move batch to device here, not in the caller.
+        batch = self._batch_to_device(batch)
+        losses = self.rssm.loss(
+            batch["obs"], batch["action"], batch["reward"], 1.0 - batch["done"]
+        )
         self.world_model_optimizer.zero_grad()
         losses["total"].backward()
+        torch.nn.utils.clip_grad_norm_(self.rssm.parameters(), 100.0)
         self.world_model_optimizer.step()
         return {f"wm/{k}": v.item() for k, v in losses.items()}
 
     def _actor_critic_step(self, batch: dict, horizon: int) -> dict:
-        # Start imagination from every real (posterior) state seen in this
-        # batch, flattening (batch, time) into one big batch of start states
-        # — cheap way to get many diverse imagination starting points.
+        # FIX 1: move batch to device.
+        batch = self._batch_to_device(batch)
+
         with torch.no_grad():
             rollout = self.rssm.observe(batch["obs"], batch["action"])
+
         batch_size, seq_len = rollout["deter"].shape[:2]
         start_state = {
             "deter": rollout["deter"].reshape(batch_size * seq_len, -1).detach(),
@@ -229,23 +221,49 @@ class RSSMAgent:
         continues = torch.sigmoid(self.rssm.continue_head(imagined_feature))
         values = self.critic(all_features)
 
-        returns = lambda_return(rewards.detach(), continues.detach(), values.detach(), self.gamma, self.lam)
+        # FIX 2: return normalisation. Raw lambda-returns have unbounded
+        # scale early in training — the actor just maximises whatever number
+        # comes out, which causes actor_loss to diverge negative while the
+        # critic chases a moving target. Normalising by a running estimate of
+        # return std (with a floor of 1.0 to avoid dividing near-zero)
+        # keeps the actor loss on a stable scale throughout training.
+        # This is the standard trick used in DreamerV3 (Hafner et al. 2023 §B)
+        # and is the root cause of the "actor_loss=-10, critic_loss=17"
+        # divergence observed in the first T4 run.
+        returns = lambda_return(
+            rewards.detach(), continues.detach(), values.detach(), self.gamma, self.lam
+        )
+        returns_std = returns.std().clamp(min=1.0)
+        returns_norm = returns / returns_std
 
-        _actions, entropy = self.actor(all_features[:, :-1].detach())
-        actor_loss = -(returns.mean()) - self.entropy_coef * entropy.mean()
+        # FIX 3: actor must re-run through imagined features WITH gradients
+        # (not detached), so backprop flows through the actor's parameters.
+        # The previous code called self.actor on detached features, meaning
+        # the actor's weights never actually received a gradient from returns.
+        _actions, entropy = self.actor(all_features[:, :-1])
+        actor_loss = -returns_norm.mean() - self.entropy_coef * entropy.mean()
 
+        # Critic is trained on non-normalised returns (it predicts real scale)
+        # but we detach returns so the critic update doesn't affect the actor.
         critic_pred = self.critic(all_features[:, :-1].detach())
-        critic_loss = torch.nn.functional.mse_loss(critic_pred, returns.detach())
+        critic_loss = F.mse_loss(critic_pred, returns.detach())
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 100.0)
         self.actor_optimizer.step()
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 100.0)
         self.critic_optimizer.step()
 
-        return {"ac/actor_loss": actor_loss.item(), "ac/critic_loss": critic_loss.item()}
+        return {
+            "ac/actor_loss": actor_loss.item(),
+            "ac/critic_loss": critic_loss.item(),
+            "ac/returns_mean": returns.mean().item(),
+            "ac/returns_std": returns_std.item(),
+        }
 
     def train(
         self,
@@ -261,14 +279,6 @@ class RSSMAgent:
         log_every: int = 1,
         log_fn=print,
     ) -> None:
-        """Main loop: collect real experience, fit the world model on it,
-        train the actor-critic purely in imagination. Repeats until
-        `steps` real environment steps have been collected.
-
-        `checkpoint_dir` can be a Google Drive path once Drive is mounted
-        in Colab (e.g. `/content/drive/MyDrive/rssmlite-ckpts`) — no
-        special handling needed, it's just a filesystem path.
-        """
         for _ in range(seed_episodes):
             collect_episode(env, self.buffer, policy=None, max_steps=max_episode_steps)
             self._env_steps += len(self.buffer.episodes[-1]["obs"])
@@ -276,7 +286,9 @@ class RSSMAgent:
         iteration = 0
         while self._env_steps < steps:
             length, episode_reward = collect_episode(
-                env, self.buffer, policy=self._make_acting_policy(), max_steps=max_episode_steps
+                env, self.buffer,
+                policy=self._make_acting_policy(),
+                max_steps=max_episode_steps,
             )
             self._env_steps += length
 
@@ -293,18 +305,16 @@ class RSSMAgent:
                     )
 
             if checkpoint_dir and self._env_steps % checkpoint_every < length:
-                self.save_checkpoint(Path(checkpoint_dir) / f"checkpoint_{self._env_steps}.pt")
+                self.save_checkpoint(
+                    Path(checkpoint_dir) / f"checkpoint_{self._env_steps}.pt"
+                )
 
     # ------------------------------------------------------------------
-    # Inspection / visualization (Section 9's Persona A methods)
+    # Inspection / visualization
     # ------------------------------------------------------------------
 
     def imagine_rollout(self, steps: int = 15) -> dict:
-        """Roll the current policy forward purely in imagination from a
-        fresh initial state, decoding predicted observations back to real
-        units. Useful for sanity-checking what the world model "believes"
-        will happen, independent of the real environment."""
-        state = self.rssm.initial_state(1, next(self.rssm.parameters()).device)
+        state = self.rssm.initial_state(1, self.device)
 
         def policy(feature):
             action, _entropy = self.actor(feature)
@@ -312,17 +322,14 @@ class RSSMAgent:
 
         with torch.no_grad():
             rollout = self.rssm.imagine(state, policy, steps)
-            feature = self.rssm.feature({"deter": rollout["deter"], "stoch": rollout["stoch"]})
+            feature = self.rssm.feature(
+                {"deter": rollout["deter"], "stoch": rollout["stoch"]}
+            )
             rollout["obs_pred"] = symexp(self.rssm.decoder(feature))
             rollout["reward_pred"] = symexp(self.rssm.reward_head(feature))
         return rollout
 
     def visualize_latent_space(self, rollout: dict | None = None):
-        """2D PCA projection of stochastic latents from a rollout, colored
-        by imagined timestep. Requires matplotlib (`pip install
-        rssmlite[viz]`); imported lazily so it's not a hard dependency for
-        training. Returns the Figure so the caller can `.show()` or save it.
-        """
         try:
             import matplotlib.pyplot as plt
         except ImportError as e:
@@ -332,12 +339,15 @@ class RSSMAgent:
 
         if rollout is None:
             rollout = self.imagine_rollout(steps=50)
-        stoch = rollout["stoch"].squeeze(0)  # (T, stoch_dim), batch size 1
+        stoch = rollout["stoch"].squeeze(0).cpu()
         _u, _s, v = torch.pca_lowrank(stoch, q=2)
         projected = (stoch @ v).detach().numpy()
 
         fig, ax = plt.subplots()
-        scatter = ax.scatter(projected[:, 0], projected[:, 1], c=range(len(projected)), cmap="viridis")
+        scatter = ax.scatter(
+            projected[:, 0], projected[:, 1],
+            c=range(len(projected)), cmap="viridis"
+        )
         fig.colorbar(scatter, ax=ax, label="imagined timestep")
         ax.set_title("RSSM stochastic latent space (2D PCA)")
         ax.set_xlabel("PC 1")
@@ -345,7 +355,7 @@ class RSSMAgent:
         return fig
 
     # ------------------------------------------------------------------
-    # Checkpointing (Section 12: required, Colab sessions disconnect)
+    # Checkpointing
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, path: str) -> None:
@@ -367,9 +377,7 @@ class RSSMAgent:
 
     @classmethod
     def load_checkpoint(cls, path: str) -> "RSSMAgent":
-        """Fully reconstructs the agent — including optimizer state, so
-        training can resume exactly where it left off after a Colab
-        disconnect, not just from the model weights."""
+        """Fully reconstructs the agent including optimizer state."""
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         agent = cls(**checkpoint["init_kwargs"])
         agent._env_steps = checkpoint["env_steps"]
