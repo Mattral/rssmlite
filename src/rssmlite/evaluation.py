@@ -85,8 +85,8 @@ def plot_reconstruction(agent: "RSSMAgent", batch: dict, feature_idx: int = 0):
     with torch.no_grad():
         rollout = rssm.observe(obs, action)
         feature = torch.cat([rollout["deter"], rollout["stoch"]], dim=-1)
-        obs_pred = symexp(rssm.decoder(feature))[0, :, feature_idx].numpy()
-        obs_real = obs[0, :, feature_idx].numpy()
+        obs_pred = symexp(rssm.decoder(feature))[0, :, feature_idx].cpu().numpy()
+        obs_real = obs[0, :, feature_idx].cpu().numpy()
 
     t = np.arange(len(obs_real))
     fig, ax = plt.subplots(figsize=(10, 3))

@@ -26,7 +26,7 @@ _KNOWN_AGENT_KEYS = {
 }
 _KNOWN_TRAIN_KEYS = {
     "steps", "seed_episodes", "batch_size", "seq_len", "horizon",
-    "max_episode_steps", "checkpoint_every", "log_every",
+    "max_episode_steps", "checkpoint_every", "log_every", "imagine_ratio",
 }
 
 
@@ -273,12 +273,23 @@ class RSSMAgent:
         batch_size: int = 16,
         seq_len: int = 50,
         horizon: int = 15,
+        imagine_ratio: int = 1,
         max_episode_steps: int = 500,
         checkpoint_dir: str | None = None,
         checkpoint_every: int = 10_000,
         log_every: int = 1,
         log_fn=print,
     ) -> None:
+        """Main training loop.
+
+        Args:
+            imagine_ratio: number of imagination (actor-critic) gradient
+                steps per real environment step collected. Setting this > 1
+                gives the actor more signal per unit of real experience —
+                important for environments like CartPole where reward=+1
+                every step gives a weak per-step signal and the actor needs
+                many updates to learn action consequences via the continue head.
+        """
         for _ in range(seed_episodes):
             collect_episode(env, self.buffer, policy=None, max_steps=max_episode_steps)
             self._env_steps += len(self.buffer.episodes[-1]["obs"])
@@ -293,9 +304,15 @@ class RSSMAgent:
             self._env_steps += length
 
             if self.buffer.can_sample(seq_len):
+                # World model step: one per real episode collected.
                 batch = self.buffer.sample(batch_size, seq_len)
                 wm_logs = self._world_model_step(batch)
-                ac_logs = self._actor_critic_step(batch, horizon)
+
+                # Actor-critic steps: imagine_ratio per real episode.
+                ac_logs = {}
+                for _ in range(imagine_ratio):
+                    batch = self.buffer.sample(batch_size, seq_len)
+                    ac_logs = self._actor_critic_step(batch, horizon)
 
                 iteration += 1
                 if log_every and iteration % log_every == 0:
