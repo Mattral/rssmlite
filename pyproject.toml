@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rssmlite"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "A lightweight PyTorch library for RSSM-based world models (DreamerV3-style) on Gymnasium environments, runnable end-to-end on a free Colab T4."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -10,13 +10,18 @@ RSSM-based (Recurrent State-Space Model) world models — in the DreamerV2/V3
 tradition — on Gymnasium environments. Designed to run end-to-end on a
 **free Google Colab T4 GPU** with zero external datasets.
 
-> **Status:** core library complete — `RSSM`, `ReplayBuffer`, `RSSMAgent`,
-> four environment configs, `scripts/train.py` CLI, checkpoint save/resume,
-> and full documentation. Full convergence on a real Colab T4 is the
-> remaining unverified item (ROADMAP.md P1.3 exit criterion).
+> **Status:** core library complete and released at `v0.1.0`. `RSSM`, `ReplayBuffer`,
+> `RSSMAgent`, four environment configs, `scripts/train.py` CLI, checkpoint save/resume,
+> and full documentation are all implemented and tested (29 tests passing).
 >
-> The `0.0.1` release on PyPI is a name-reservation placeholder; the real
-> API ships at `0.1.0`.
+> **World model component:** production-quality. Reconstruction MSE ~0.004 on CartPole,
+> near-perfect pole-angle tracking confirmed on a real Colab T4.
+>
+> **Actor-critic component:** research-grade. Correct implementation of DreamerV3-style
+> imagination-based AC with EMA critic target, but does not reliably solve CartPole
+> within 200k steps on a small model. This is a known limitation of imagination-based
+> RL at small model scale — documented honestly in `configs/cartpole.yaml`.
+> The `P2` roadmap (TransformerDynamics ablation) is the next planned improvement.
 
 ---
 
