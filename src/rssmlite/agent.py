@@ -1,6 +1,5 @@
 """
-RSSMAgent: the thing a user actually calls. Wraps an RSSM (world model)
-with an Actor/Critic and owns the full training loop.
+RSSMAgent: wraps RSSM with an actor-critic trained on imagined rollouts.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ _KNOWN_CONFIG_SECTIONS = {"env", "agent", "train"}
 _KNOWN_AGENT_KEYS = {
     "obs_dim", "action_dim", "discrete", "rssm_kwargs", "hidden_dim",
     "world_model_lr", "actor_lr", "critic_lr", "gamma", "lam",
-    "entropy_coef", "replay_capacity_episodes",
+    "entropy_coef", "replay_capacity_episodes", "critic_ema_tau",
 }
 _KNOWN_TRAIN_KEYS = {
     "steps", "seed_episodes", "batch_size", "seq_len", "horizon",
@@ -33,15 +32,13 @@ _KNOWN_TRAIN_KEYS = {
 def _validate_config(config: dict) -> None:
     unknown_sections = set(config) - _KNOWN_CONFIG_SECTIONS
     if unknown_sections:
-        raise ValueError(f"Unknown config section(s): {unknown_sections}. Expected: {_KNOWN_CONFIG_SECTIONS}")
-    agent_keys = set(config.get("agent", {}))
-    unknown_agent = agent_keys - _KNOWN_AGENT_KEYS
+        raise ValueError(f"Unknown config section(s): {unknown_sections}")
+    unknown_agent = set(config.get("agent", {})) - _KNOWN_AGENT_KEYS
     if unknown_agent:
-        raise ValueError(f"Unknown agent config key(s): {unknown_agent}. Known: {_KNOWN_AGENT_KEYS}")
-    train_keys = set(config.get("train", {}))
-    unknown_train = train_keys - _KNOWN_TRAIN_KEYS
+        raise ValueError(f"Unknown agent config key(s): {unknown_agent}")
+    unknown_train = set(config.get("train", {})) - _KNOWN_TRAIN_KEYS
     if unknown_train:
-        raise ValueError(f"Unknown train config key(s): {unknown_train}. Known: {_KNOWN_TRAIN_KEYS}")
+        raise ValueError(f"Unknown train config key(s): {unknown_train}")
 
 
 class RSSMAgent:
@@ -59,6 +56,7 @@ class RSSMAgent:
         lam: float = 0.95,
         entropy_coef: float = 3e-4,
         replay_capacity_episodes: int = 500,
+        critic_ema_tau: float = 0.02,
     ):
         self.discrete = discrete
         self.action_dim = action_dim
@@ -69,6 +67,10 @@ class RSSMAgent:
         self.rssm = RSSM(obs_dim=obs_dim, action_dim=action_dim, **(rssm_kwargs or {}))
         self.actor = Actor(self.rssm.feature_dim, action_dim, discrete, hidden_dim)
         self.critic = Critic(self.rssm.feature_dim, hidden_dim)
+        # EMA target critic — slowly-tracking copy used only for bootstrap
+        # targets in lambda_return. Prevents the critic loss from diverging
+        # when target and prediction co-move (the issue seen in T4 run 2).
+        self.critic_ema = self.critic.make_ema(tau=critic_ema_tau)
 
         self.world_model_optimizer = torch.optim.Adam(self.rssm.parameters(), lr=world_model_lr)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
@@ -78,45 +80,36 @@ class RSSMAgent:
         self._env_steps = 0
 
         self._init_kwargs = dict(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            discrete=discrete,
-            rssm_kwargs=rssm_kwargs,
-            hidden_dim=hidden_dim,
-            world_model_lr=world_model_lr,
-            actor_lr=actor_lr,
-            critic_lr=critic_lr,
-            gamma=gamma,
-            lam=lam,
-            entropy_coef=entropy_coef,
+            obs_dim=obs_dim, action_dim=action_dim, discrete=discrete,
+            rssm_kwargs=rssm_kwargs, hidden_dim=hidden_dim,
+            world_model_lr=world_model_lr, actor_lr=actor_lr, critic_lr=critic_lr,
+            gamma=gamma, lam=lam, entropy_coef=entropy_coef,
             replay_capacity_episodes=replay_capacity_episodes,
+            critic_ema_tau=critic_ema_tau,
         )
 
     # ------------------------------------------------------------------
-    # Device handling — explicit, not implicit
+    # Device handling
     # ------------------------------------------------------------------
 
     @property
     def device(self) -> torch.device:
-        """The device all three networks currently live on. Use .to(device)
-        to move everything at once."""
         return next(self.rssm.parameters()).device
 
     def to(self, device) -> "RSSMAgent":
-        """Move all networks to `device` in one call. Returns self so you
-        can chain: agent = RSSMAgent(...).to('cuda')"""
+        """Move all networks to device in one call."""
         self.rssm.to(device)
         self.actor.to(device)
         self.critic.to(device)
+        self.critic_ema.to(device)
         return self
 
     def _batch_to_device(self, batch: dict) -> dict:
-        """Move a replay-buffer sample dict to the same device as the networks."""
         return {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()}
 
     # ------------------------------------------------------------------
-    # Construction helpers
+    # Construction
     # ------------------------------------------------------------------
 
     @classmethod
@@ -129,8 +122,6 @@ class RSSMAgent:
 
     @classmethod
     def from_config(cls, path: str, env=None) -> "RSSMAgent":
-        """Build an agent from a YAML config. See configs/*.yaml for examples.
-        Pass `env` to infer obs_dim/action_dim/discrete automatically."""
         with open(path) as f:
             config = yaml.safe_load(f)
         _validate_config(config)
@@ -143,20 +134,16 @@ class RSSMAgent:
         return cls(**agent_kwargs)
 
     # ------------------------------------------------------------------
-    # Acting in the real environment
+    # Acting
     # ------------------------------------------------------------------
 
     def _make_acting_policy(self):
-        """Stateful one-episode policy. Updates belief state from real obs
-        at each step (posterior filtering), then samples from the actor."""
         device = self.device
         state = self.rssm.initial_state(1, device)
-        # FIX 1: prev_action must live on the same device as the networks.
         prev_action = torch.zeros(1, self.action_dim, device=device)
         step = {"t": 0}
 
         def policy(obs):
-            # FIX 1 cont: move incoming numpy obs to device explicitly.
             obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
                 if step["t"] > 0:
@@ -167,8 +154,7 @@ class RSSMAgent:
                 post_logits = self.rssm.posterior_net(state["deter"], embed)
                 state["stoch"] = straight_through_sample(post_logits).flatten(-2, -1)
                 feature = self.rssm.feature(state)
-                action, _entropy = self.actor(feature)
-
+                action, _ = self.actor(feature)
             prev_action.copy_(action)
             step["t"] += 1
             if self.discrete:
@@ -182,7 +168,6 @@ class RSSMAgent:
     # ------------------------------------------------------------------
 
     def _world_model_step(self, batch: dict) -> dict:
-        # FIX 1: move batch to device here, not in the caller.
         batch = self._batch_to_device(batch)
         losses = self.rssm.loss(
             batch["obs"], batch["action"], batch["reward"], 1.0 - batch["done"]
@@ -194,20 +179,19 @@ class RSSMAgent:
         return {f"wm/{k}": v.item() for k, v in losses.items()}
 
     def _actor_critic_step(self, batch: dict, horizon: int) -> dict:
-        # FIX 1: move batch to device.
         batch = self._batch_to_device(batch)
 
         with torch.no_grad():
             rollout = self.rssm.observe(batch["obs"], batch["action"])
 
-        batch_size, seq_len = rollout["deter"].shape[:2]
+        B, T = rollout["deter"].shape[:2]
         start_state = {
-            "deter": rollout["deter"].reshape(batch_size * seq_len, -1).detach(),
-            "stoch": rollout["stoch"].reshape(batch_size * seq_len, -1).detach(),
+            "deter": rollout["deter"].reshape(B * T, -1).detach(),
+            "stoch": rollout["stoch"].reshape(B * T, -1).detach(),
         }
 
         def policy(feature):
-            action, _entropy = self.actor(feature)
+            action, _ = self.actor(feature)
             return action
 
         imagined = self.rssm.imagine(start_state, policy, horizon)
@@ -217,34 +201,29 @@ class RSSMAgent:
         start_feature = self.rssm.feature(start_state).unsqueeze(1)
         all_features = torch.cat([start_feature, imagined_feature], dim=1)  # (N, H+1, feat)
 
-        rewards = symexp(self.rssm.reward_head(imagined_feature))
-        continues = torch.sigmoid(self.rssm.continue_head(imagined_feature))
-        values = self.critic(all_features)
+        with torch.no_grad():
+            rewards = symexp(self.rssm.reward_head(imagined_feature))
+            continues = torch.sigmoid(self.rssm.continue_head(imagined_feature))
+            # KEY FIX: use the slow-moving EMA target critic for bootstrap
+            # values rather than the online critic. This breaks the co-moving
+            # target/prediction loop that caused critic_loss to diverge to 40+.
+            ema_values = self.critic_ema(all_features)
 
-        # FIX 2: return normalisation. Raw lambda-returns have unbounded
-        # scale early in training — the actor just maximises whatever number
-        # comes out, which causes actor_loss to diverge negative while the
-        # critic chases a moving target. Normalising by a running estimate of
-        # return std (with a floor of 1.0 to avoid dividing near-zero)
-        # keeps the actor loss on a stable scale throughout training.
-        # This is the standard trick used in DreamerV3 (Hafner et al. 2023 §B)
-        # and is the root cause of the "actor_loss=-10, critic_loss=17"
-        # divergence observed in the first T4 run.
         returns = lambda_return(
-            rewards.detach(), continues.detach(), values.detach(), self.gamma, self.lam
+            rewards, continues, ema_values, self.gamma, self.lam
         )
+
+        # Return normalisation — keeps actor loss on a stable scale.
         returns_std = returns.std().clamp(min=1.0)
         returns_norm = returns / returns_std
 
-        # FIX 3: actor must re-run through imagined features WITH gradients
-        # (not detached), so backprop flows through the actor's parameters.
-        # The previous code called self.actor on detached features, meaning
-        # the actor's weights never actually received a gradient from returns.
-        _actions, entropy = self.actor(all_features[:, :-1])
+        # Actor loss: maximise normalised returns + entropy bonus.
+        # Features must NOT be detached here so gradients reach actor params.
+        _, entropy = self.actor(all_features[:, :-1])
         actor_loss = -returns_norm.mean() - self.entropy_coef * entropy.mean()
 
-        # Critic is trained on non-normalised returns (it predicts real scale)
-        # but we detach returns so the critic update doesn't affect the actor.
+        # Critic loss: online critic predicts real-scale returns.
+        # Features detached — critic update must not affect RSSM or actor.
         critic_pred = self.critic(all_features[:, :-1].detach())
         critic_loss = F.mse_loss(critic_pred, returns.detach())
 
@@ -257,6 +236,9 @@ class RSSMAgent:
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 100.0)
         self.critic_optimizer.step()
+
+        # Soft-update the EMA target after every critic gradient step.
+        self.critic_ema.soft_update(self.critic)
 
         return {
             "ac/actor_loss": actor_loss.item(),
@@ -280,16 +262,6 @@ class RSSMAgent:
         log_every: int = 1,
         log_fn=print,
     ) -> None:
-        """Main training loop.
-
-        Args:
-            imagine_ratio: number of imagination (actor-critic) gradient
-                steps per real environment step collected. Setting this > 1
-                gives the actor more signal per unit of real experience —
-                important for environments like CartPole where reward=+1
-                every step gives a weak per-step signal and the actor needs
-                many updates to learn action consequences via the continue head.
-        """
         for _ in range(seed_episodes):
             collect_episode(env, self.buffer, policy=None, max_steps=max_episode_steps)
             self._env_steps += len(self.buffer.episodes[-1]["obs"])
@@ -304,11 +276,9 @@ class RSSMAgent:
             self._env_steps += length
 
             if self.buffer.can_sample(seq_len):
-                # World model step: one per real episode collected.
                 batch = self.buffer.sample(batch_size, seq_len)
                 wm_logs = self._world_model_step(batch)
 
-                # Actor-critic steps: imagine_ratio per real episode.
                 ac_logs = {}
                 for _ in range(imagine_ratio):
                     batch = self.buffer.sample(batch_size, seq_len)
@@ -327,14 +297,14 @@ class RSSMAgent:
                 )
 
     # ------------------------------------------------------------------
-    # Inspection / visualization
+    # Inspection
     # ------------------------------------------------------------------
 
     def imagine_rollout(self, steps: int = 15) -> dict:
         state = self.rssm.initial_state(1, self.device)
 
         def policy(feature):
-            action, _entropy = self.actor(feature)
+            action, _ = self.actor(feature)
             return action
 
         with torch.no_grad():
@@ -350,9 +320,7 @@ class RSSMAgent:
         try:
             import matplotlib.pyplot as plt
         except ImportError as e:
-            raise ImportError(
-                "visualize_latent_space() needs matplotlib: pip install rssmlite[viz]"
-            ) from e
+            raise ImportError("needs matplotlib: pip install rssmlite[viz]") from e
 
         if rollout is None:
             rollout = self.imagine_rollout(steps=50)
@@ -361,14 +329,11 @@ class RSSMAgent:
         projected = (stoch @ v).detach().numpy()
 
         fig, ax = plt.subplots()
-        scatter = ax.scatter(
-            projected[:, 0], projected[:, 1],
-            c=range(len(projected)), cmap="viridis"
-        )
+        scatter = ax.scatter(projected[:, 0], projected[:, 1],
+                             c=range(len(projected)), cmap="viridis")
         fig.colorbar(scatter, ax=ax, label="imagined timestep")
         ax.set_title("RSSM stochastic latent space (2D PCA)")
-        ax.set_xlabel("PC 1")
-        ax.set_ylabel("PC 2")
+        ax.set_xlabel("PC 1"); ax.set_ylabel("PC 2")
         return fig
 
     # ------------------------------------------------------------------
@@ -378,30 +343,29 @@ class RSSMAgent:
     def save_checkpoint(self, path: str) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "init_kwargs": self._init_kwargs,
-                "env_steps": self._env_steps,
-                "rssm": self.rssm.state_dict(),
-                "actor": self.actor.state_dict(),
-                "critic": self.critic.state_dict(),
-                "world_model_optimizer": self.world_model_optimizer.state_dict(),
-                "actor_optimizer": self.actor_optimizer.state_dict(),
-                "critic_optimizer": self.critic_optimizer.state_dict(),
-            },
-            path,
-        )
+        torch.save({
+            "init_kwargs": self._init_kwargs,
+            "env_steps": self._env_steps,
+            "rssm": self.rssm.state_dict(),
+            "actor": self.actor.state_dict(),
+            "critic": self.critic.state_dict(),
+            "critic_ema": self.critic_ema._target.state_dict(),
+            "world_model_optimizer": self.world_model_optimizer.state_dict(),
+            "actor_optimizer": self.actor_optimizer.state_dict(),
+            "critic_optimizer": self.critic_optimizer.state_dict(),
+        }, path)
 
     @classmethod
     def load_checkpoint(cls, path: str) -> "RSSMAgent":
-        """Fully reconstructs the agent including optimizer state."""
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        agent = cls(**checkpoint["init_kwargs"])
-        agent._env_steps = checkpoint["env_steps"]
-        agent.rssm.load_state_dict(checkpoint["rssm"])
-        agent.actor.load_state_dict(checkpoint["actor"])
-        agent.critic.load_state_dict(checkpoint["critic"])
-        agent.world_model_optimizer.load_state_dict(checkpoint["world_model_optimizer"])
-        agent.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
-        agent.critic_optimizer.load_state_dict(checkpoint["critic_optimizer"])
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        agent = cls(**ckpt["init_kwargs"])
+        agent._env_steps = ckpt["env_steps"]
+        agent.rssm.load_state_dict(ckpt["rssm"])
+        agent.actor.load_state_dict(ckpt["actor"])
+        agent.critic.load_state_dict(ckpt["critic"])
+        if "critic_ema" in ckpt:
+            agent.critic_ema._target.load_state_dict(ckpt["critic_ema"])
+        agent.world_model_optimizer.load_state_dict(ckpt["world_model_optimizer"])
+        agent.actor_optimizer.load_state_dict(ckpt["actor_optimizer"])
+        agent.critic_optimizer.load_state_dict(ckpt["critic_optimizer"])
         return agent

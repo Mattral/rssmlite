@@ -46,19 +46,26 @@ def test_from_config_all_four_envs():
     """from_config must parse all four shipped configs without error.
     LunarLander requires box2d (gymnasium[box2d]) — skipped if absent."""
     import yaml
+    from pathlib import Path
 
-    configs = ["configs/cartpole.yaml", "configs/acrobot.yaml",
-               "configs/pendulum.yaml", "configs/lunarlander.yaml"]
+    # Use path relative to the test file so this works on any machine/CI runner
+    repo_root = Path(__file__).parent.parent
+    configs = [
+        repo_root / "configs/cartpole.yaml",
+        repo_root / "configs/acrobot.yaml",
+        repo_root / "configs/pendulum.yaml",
+        repo_root / "configs/lunarlander.yaml",
+    ]
     for path in configs:
-        with open(f"/home/claude/rssmlite-repo/{path}") as f:
+        with open(path) as f:
             cfg = yaml.safe_load(f)
         try:
             env = gym.make(cfg["env"]["id"])
         except Exception as e:
             if "Box2D" in str(e) or "box2d" in str(e).lower():
-                pytest.skip(f"Skipping {path}: box2d not installed")
+                pytest.skip(f"Skipping {path.name}: box2d not installed")
             raise
-        agent = RSSMAgent.from_config(f"/home/claude/rssmlite-repo/{path}", env=env)
+        agent = RSSMAgent.from_config(str(path), env=env)
         assert agent.rssm is not None
         env.close()
 

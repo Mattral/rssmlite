@@ -1,16 +1,17 @@
-# CartPole-v1 config — tuned after first real T4 run.
+# CartPole-v1 — v3 config (EMA critic target)
 #
-# Root cause of first failed run: with random-policy seed data and
-# reward=+1/step regardless of action, the actor had no gradient signal
-# distinguishing good from bad actions. Fixes:
-#   - seed_episodes: 50 (was 5) — fill buffer with longer episodes so
-#     the world model sees meaningful action consequences before actor trains
-#   - imagine_ratio: 10 — 10 imagination steps per real step, giving the
-#     actor 10x more gradient updates to learn from the world model
-#   - entropy_coef: 0.003 (was 0.0003) — push actor to explore rather
-#     than commit to one mediocre strategy
-#   - horizon: 20 (was 15) — longer imagination gives more signal about
-#     which actions lead to later termination
+# History of changes:
+#   v1: seed_episodes=5, imagine_ratio=1, entropy_coef=0.0003
+#       Result: policy never improved. Root cause: random-policy buffer
+#       gave identical reward signal for all actions.
+#   v2: seed_episodes=50, imagine_ratio=10, entropy_coef=0.003
+#       Result: world model excellent (recon=0.003), but critic_loss
+#       diverged to 40-50 immediately and never recovered. Root cause:
+#       critic bootstrap target and online prediction co-move without
+#       a target network.
+#   v3 (this config): added CriticEMA target network (tau=0.02).
+#       imagine_ratio reduced to 5 (stable critic means fewer steps needed).
+#       entropy_coef kept at 0.003 for early exploration.
 
 env:
   id: CartPole-v1
@@ -30,6 +31,7 @@ agent:
   gamma: 0.99
   lam: 0.95
   entropy_coef: 0.003
+  critic_ema_tau: 0.02
   replay_capacity_episodes: 500
 
 train:
@@ -38,5 +40,5 @@ train:
   batch_size: 16
   seq_len: 50
   horizon: 20
-  imagine_ratio: 10
+  imagine_ratio: 5
   checkpoint_every: 10000

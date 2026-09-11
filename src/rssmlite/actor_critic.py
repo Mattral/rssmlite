@@ -1,16 +1,18 @@
 """
-Actor and Critic, trained entirely on rollouts imagined by the RSSM's
-dynamics/reward/continue heads — never touching the real environment during
-this phase. This is what makes the approach sample-efficient: one real
-episode can be "replayed" through imagination thousands of times.
+Actor, Critic, EMA target critic, and lambda-return computation.
 
-Handles both action spaces in Section 7's target envs: Discrete (CartPole,
-Acrobot, LunarLander) via a straight-through categorical, Continuous
-(Pendulum) via a reparameterized Normal. No tanh squashing on the
-continuous head yet — a documented simplification, see README caveats.
+Key design change vs v1: the Critic now has a paired `CriticEMA` (exponential
+moving average copy) used exclusively to compute bootstrap targets for
+lambda-returns. Without this, the critic's target and its own predictions
+co-move during training, causing the divergence observed in early T4 runs
+(critic_loss exploding to 40-50 and never recovering). EMA target networks
+are standard in off-policy RL (DQN, SAC, TD3, DreamerV3) for exactly this
+reason.
 """
 
 from __future__ import annotations
+
+import copy
 
 import torch
 import torch.nn as nn
@@ -26,21 +28,11 @@ class Actor(nn.Module):
         self.action_dim = action_dim
         self.net = mlp(feature_dim, hidden_dim, action_dim)
         if not discrete:
-            # State-independent log-std, a common simplification (e.g. PPO's
-            # default) that avoids the head needing to learn variance from
-            # very little imagined data early in training.
             self.log_std = nn.Parameter(torch.zeros(action_dim))
 
     def forward(self, feature: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (action, entropy). `action` is a *differentiable* sample
-        — both branches support backprop straight through to `feature`,
-        which is what lets the actor loss backprop through the imagined
-        rollout (Dreamer's "dynamics backprop" trick, no REINFORCE needed).
-        """
         if self.discrete:
             logits = self.net(feature)
-            # Reuse the same straight-through trick as the stochastic latent,
-            # treating the action as a single categorical group.
             action = straight_through_sample(logits.unsqueeze(-2)).squeeze(-2)
             entropy = OneHotCategorical(logits=logits).entropy()
             return action, entropy
@@ -54,15 +46,44 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    """Feature -> scalar value estimate, trained to match lambda-returns
-    computed over imagined rollouts."""
-
     def __init__(self, feature_dim: int, hidden_dim: int = 200):
         super().__init__()
         self.net = mlp(feature_dim, hidden_dim, 1)
 
     def forward(self, feature: torch.Tensor) -> torch.Tensor:
         return self.net(feature).squeeze(-1)
+
+    def make_ema(self, tau: float = 0.02) -> "CriticEMA":
+        """Create a paired EMA target network. `tau` is the update rate —
+        smaller = slower-moving target = more stable bootstrap values.
+        DreamerV3 uses tau=0.02."""
+        return CriticEMA(self, tau)
+
+
+class CriticEMA:
+    """Exponential moving average copy of a Critic, used only for computing
+    bootstrap targets. Never receives gradient updates — only updated via
+    soft_update() after each critic gradient step.
+
+    target_params = (1 - tau) * target_params + tau * online_params
+    """
+
+    def __init__(self, critic: Critic, tau: float = 0.02):
+        self.tau = tau
+        self._target = copy.deepcopy(critic)
+        for p in self._target.parameters():
+            p.requires_grad_(False)
+
+    def __call__(self, feature: torch.Tensor) -> torch.Tensor:
+        return self._target(feature)
+
+    def soft_update(self, critic: Critic) -> None:
+        for target_p, online_p in zip(self._target.parameters(), critic.parameters()):
+            target_p.data.lerp_(online_p.data, self.tau)
+
+    def to(self, device) -> "CriticEMA":
+        self._target = self._target.to(device)
+        return self
 
 
 def lambda_return(
@@ -72,19 +93,14 @@ def lambda_return(
     gamma: float = 0.99,
     lam: float = 0.95,
 ) -> torch.Tensor:
-    """TD(lambda) returns over an imagined rollout (Dreamer's actor-critic
-    objective, Hafner et al. 2023 Eq. 6).
+    """TD(lambda) returns. values[:, -1] is the EMA-target bootstrap value
+    at the imagined horizon — using the slow-moving target here rather than
+    the online critic is what stabilises training.
 
     Args:
-        rewards: (B, H) predicted reward for entering each imagined state.
-        continues: (B, H) predicted P(episode continues) at each state.
-        values: (B, H+1) critic estimate at the real starting state (index
-            0) and every imagined state (indices 1..H). Index H doubles as
-            the bootstrap target for the final step.
-        gamma, lam: discount and the usual TD-lambda mixing coefficient.
-
-    Returns:
-        (B, H) lambda-returns, one per imagined step (matching `rewards`).
+        rewards:   (B, H)   imagined rewards at steps 1..H
+        continues: (B, H)   P(episode continues) at steps 1..H
+        values:    (B, H+1) EMA-target value at step 0 (start) and 1..H
     """
     horizon = rewards.shape[1]
     returns = torch.zeros_like(rewards)
